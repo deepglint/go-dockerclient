@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/fsouza/go-dockerclient/utils"
+	"github.com/deepglint/go-dockerclient/utils"
 	"io"
 	"io/ioutil"
 	"net"
@@ -22,7 +22,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 const userAgent = "go-dockerclient"
@@ -38,10 +37,9 @@ var (
 // Client is the basic type of this package. It provides methods for
 // interaction with the API.
 type Client struct {
-	endpoint     string
-	endpointURL  *url.URL
-	eventMonitor *eventMonitoringState
-	client       *http.Client
+	endpoint    string
+	endpointURL *url.URL
+	client      *http.Client
 }
 
 // NewClient returns a Client instance ready for communication with the
@@ -52,10 +50,9 @@ func NewClient(endpoint string) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		endpoint:     endpoint,
-		endpointURL:  u,
-		client:       http.DefaultClient,
-		eventMonitor: new(eventMonitoringState),
+		endpoint:    endpoint,
+		endpointURL: u,
+		client:      http.DefaultClient,
 	}, nil
 }
 
@@ -207,9 +204,7 @@ func (c *Client) hijack(method, path string, success chan struct{}, in io.Reader
 		<-success
 	}
 	rwc, br := clientconn.Hijack()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	errs := make(chan error, 2)
+	errStdout := make(chan error, 1)
 	go func() {
 		var err error
 		if in != nil {
@@ -217,23 +212,19 @@ func (c *Client) hijack(method, path string, success chan struct{}, in io.Reader
 		} else {
 			_, err = utils.StdCopy(out, errStream, br)
 		}
-		errs <- err
-		wg.Done()
+		errStdout <- err
 	}()
 	go func() {
-		var err error
 		if in != nil {
-			_, err = io.Copy(rwc, in)
+			io.Copy(rwc, in)
 		}
-		rwc.(interface {
+		if err := rwc.(interface {
 			CloseWrite() error
-		}).CloseWrite()
-		errs <- err
-		wg.Done()
+		}).CloseWrite(); err != nil && errStream != nil {
+			fmt.Fprintf(errStream, "Couldn't send EOF: %s\n", err)
+		}
 	}()
-	wg.Wait()
-	close(errs)
-	if err := <-errs; err != nil {
+	if err := <-errStdout; err != nil {
 		return err
 	}
 	return nil

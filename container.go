@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -175,7 +176,7 @@ type Config struct {
 	StdinOnce       bool
 	Env             []string
 	Cmd             []string
-	Dns             []string  // For Docker API v1.9 and below only
+	Dns             []string
 	Image           string
 	Volumes         map[string]struct{}
 	VolumesFrom     string
@@ -196,6 +197,7 @@ type Container struct {
 	State  State
 	Image  string
 
+	HostConfig      *HostConfig
 	NetworkSettings *NetworkSettings
 
 	SysInitPath    string
@@ -205,9 +207,8 @@ type Container struct {
 	Name           string
 	Driver         string
 
-	Volumes    map[string]string
-	VolumesRW  map[string]bool
-	HostConfig *HostConfig
+	Volumes   map[string]string
+	VolumesRW map[string]bool
 }
 
 // InspectContainer returns information about a container by its ID.
@@ -276,9 +277,6 @@ func (c *Client) CreateContainer(opts CreateContainerOptions) (*Container, error
 	if err != nil {
 		return nil, err
 	}
-
-	container.Name = opts.Name
-
 	return &container, nil
 }
 
@@ -295,7 +293,6 @@ type HostConfig struct {
 	PortBindings    map[Port][]PortBinding
 	Links           []string
 	PublishAllPorts bool
-	Dns             []string  // For Docker API v1.10 and above only
 }
 
 // StartContainer starts a container, returning an errror in case of failure.
@@ -429,6 +426,7 @@ func (c *Client) CopyFromContainer(opts CopyFromContainerOptions) error {
 	if err != nil {
 		return err
 	}
+	log.Println(string(body))
 	io.Copy(opts.OutputStream, bytes.NewBuffer(body))
 	return nil
 }
@@ -571,6 +569,64 @@ func (c *Client) ExportContainer(opts ExportContainerOptions) error {
 	}
 	url := fmt.Sprintf("/containers/%s/export", opts.ID)
 	return c.stream("GET", url, nil, nil, opts.OutputStream)
+}
+
+// container logs
+type ContainerLogsOptions struct {
+	ID           string `qs:"-"`
+	Follow       bool
+	Stdout       bool
+	Stderr       bool
+	Timestamps   bool
+	Tail         int
+	OutputStream io.Writer `qs:"-"`
+}
+
+func (c *Client) ContainerLogs(opts ContainerLogsOptions) error {
+	if opts.ID == "" {
+		return &NoSuchContainer{ID: opts.ID}
+	}
+	path := "/containers/" + opts.ID + "/logs?" + queryString(opts)
+	body, status, err := c.do("GET", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: opts.ID}
+	}
+	if err != nil {
+		return err
+	}
+	log.Println(string(body))
+	io.Copy(opts.OutputStream, bytes.NewReader(body))
+	return nil
+}
+
+func (c *Client) PauseContainer(id string) error {
+	if id == "" {
+		return &NoSuchContainer{ID: id}
+	}
+	path := "/containers/" + id + "/pause"
+	_, status, err := c.do("POST", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: id}
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) UnpauseContainer(id string) error {
+	if id == "" {
+		return &NoSuchContainer{ID: id}
+	}
+	path := "/containers/" + id + "/unpause"
+	_, status, err := c.do("POST", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: id}
+	}
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // NoSuchContainer is the error returned when a given container does not exist.

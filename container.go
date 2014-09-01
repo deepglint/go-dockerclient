@@ -9,12 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -88,22 +86,19 @@ func (p Port) Proto() string {
 
 // State represents the state of a container.
 type State struct {
-	sync.RWMutex
 	Running    bool
+	Paused     bool
 	Pid        int
 	ExitCode   int
 	StartedAt  time.Time
 	FinishedAt time.Time
-	Ghost      bool
 }
 
 // String returns the string representation of a state.
 func (s *State) String() string {
-	s.RLock()
-	defer s.RUnlock()
 	if s.Running {
-		if s.Ghost {
-			return "Ghost"
+		if s.Paused {
+			return "paused"
 		}
 		return fmt.Sprintf("Up %s", time.Now().UTC().Sub(s.StartedAt))
 	}
@@ -176,7 +171,7 @@ type Config struct {
 	StdinOnce       bool
 	Env             []string
 	Cmd             []string
-	Dns             []string
+	Dns             []string // For Docker API v1.9 and below only
 	Image           string
 	Volumes         map[string]struct{}
 	VolumesFrom     string
@@ -197,7 +192,6 @@ type Container struct {
 	State  State
 	Image  string
 
-	HostConfig      *HostConfig
 	NetworkSettings *NetworkSettings
 
 	SysInitPath    string
@@ -207,8 +201,9 @@ type Container struct {
 	Name           string
 	Driver         string
 
-	Volumes   map[string]string
-	VolumesRW map[string]bool
+	Volumes    map[string]string
+	VolumesRW  map[string]bool
+	HostConfig *HostConfig
 }
 
 // InspectContainer returns information about a container by its ID.
@@ -277,12 +272,46 @@ func (c *Client) CreateContainer(opts CreateContainerOptions) (*Container, error
 	if err != nil {
 		return nil, err
 	}
+
+	container.Name = opts.Name
+
 	return &container, nil
 }
 
 type KeyValuePair struct {
 	Key   string
 	Value string
+}
+
+// RestartPolicy represents the policy for automatically restarting a container.
+//
+// Possible values are:
+//
+//   - always: the docker daemon will always restart the container
+//   - on-failure: the docker daemon will restart the container on failures, at
+//                 most MaximumRetryCount times
+//   - no: the docker daemon will not restart the container automatically
+type RestartPolicy struct {
+	Name     string
+	MaxRetry int `json:"MaximumRetryCount"`
+}
+
+// AlwaysRestart returns a restart policy that tells the Docker daemon to
+// always restart the container.
+func AlwaysRestart() RestartPolicy {
+	return RestartPolicy{Name: "always"}
+}
+
+// RestartOnFailure returns a restart policy that tells the Docker daemon to
+// restart the container on failures, trying at most maxRetry times.
+func RestartOnFailure(maxRetry int) RestartPolicy {
+	return RestartPolicy{Name: "on-failure", MaxRetry: maxRetry}
+}
+
+// NeverRestart returns a restart policy that tells the Docker daemon to never
+// restart the container on failures.
+func NeverRestart() RestartPolicy {
+	return RestartPolicy{Name: "no"}
 }
 
 type HostConfig struct {
@@ -293,9 +322,14 @@ type HostConfig struct {
 	PortBindings    map[Port][]PortBinding
 	Links           []string
 	PublishAllPorts bool
+	Dns             []string // For Docker API v1.10 and above only
+	DnsSearch       []string
+	VolumesFrom     []string
+	NetworkMode     string
+	RestartPolicy   RestartPolicy
 }
 
-// StartContainer starts a container, returning an errror in case of failure.
+// StartContainer starts a container, returning an error in case of failure.
 //
 // See http://goo.gl/y5GZlE for more details.
 func (c *Client) StartContainer(id string, hostConfig *HostConfig) error {
@@ -306,6 +340,9 @@ func (c *Client) StartContainer(id string, hostConfig *HostConfig) error {
 	_, status, err := c.do("POST", path, hostConfig)
 	if status == http.StatusNotFound {
 		return &NoSuchContainer{ID: id}
+	}
+	if status == http.StatusNotModified {
+		return &ContainerAlreadyRunning{ID: id}
 	}
 	if err != nil {
 		return err
@@ -323,6 +360,9 @@ func (c *Client) StopContainer(id string, timeout uint) error {
 	if status == http.StatusNotFound {
 		return &NoSuchContainer{ID: id}
 	}
+	if status == http.StatusNotModified {
+		return &ContainerNotRunning{ID: id}
+	}
 	if err != nil {
 		return err
 	}
@@ -335,6 +375,36 @@ func (c *Client) StopContainer(id string, timeout uint) error {
 // See http://goo.gl/zms73Z for more details.
 func (c *Client) RestartContainer(id string, timeout uint) error {
 	path := fmt.Sprintf("/containers/%s/restart?t=%d", id, timeout)
+	_, status, err := c.do("POST", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: id}
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// PauseContainer pauses the given container.
+//
+// See http://goo.gl/AM5t42 for more details.
+func (c *Client) PauseContainer(id string) error {
+	path := fmt.Sprintf("/containers/%s/pause", id)
+	_, status, err := c.do("POST", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: id}
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// UnpauseContainer pauses the given container.
+//
+// See http://goo.gl/eBrNSL for more details.
+func (c *Client) UnpauseContainer(id string) error {
+	path := fmt.Sprintf("/containers/%s/unpause", id)
 	_, status, err := c.do("POST", path, nil)
 	if status == http.StatusNotFound {
 		return &NoSuchContainer{ID: id}
@@ -426,7 +496,6 @@ func (c *Client) CopyFromContainer(opts CopyFromContainerOptions) error {
 	if err != nil {
 		return err
 	}
-	log.Println(string(body))
 	io.Copy(opts.OutputStream, bytes.NewBuffer(body))
 	return nil
 }
@@ -461,20 +530,6 @@ type CommitContainerOptions struct {
 	Message    string `qs:"m"`
 	Author     string
 	Run        *Config `qs:"-"`
-}
-
-type Image struct {
-	ID              string    `json:"id"`
-	Parent          string    `json:"parent,omitempty"`
-	Comment         string    `json:"comment,omitempty"`
-	Created         time.Time `json:"created"`
-	Container       string    `json:"container,omitempty"`
-	ContainerConfig Config    `json:"container_config,omitempty"`
-	DockerVersion   string    `json:"docker_version,omitempty"`
-	Author          string    `json:"author,omitempty"`
-	Config          *Config   `json:"config,omitempty"`
-	Architecture    string    `json:"architecture,omitempty"`
-	Size            int64
 }
 
 // CommitContainer creates a new image from a container's changes.
@@ -513,7 +568,7 @@ type AttachToContainerOptions struct {
 	// Stream the response?
 	Stream bool
 
-	// Attach to stdin, and use InputFile.
+	// Attach to stdin, and use InputStream.
 	Stdin bool
 
 	// Attach to stdout, and use OutputStream.
@@ -528,6 +583,9 @@ type AttachToContainerOptions struct {
 	// It must be an unbuffered channel. Using a buffered channel can lead
 	// to unexpected behavior.
 	Success chan struct{}
+
+	// Use raw terminal? Usually true when the container contains a TTY.
+	RawTerminal bool `qs:"-"`
 }
 
 // AttachToContainer attaches to a container, using the given options.
@@ -538,7 +596,39 @@ func (c *Client) AttachToContainer(opts AttachToContainerOptions) error {
 		return &NoSuchContainer{ID: opts.Container}
 	}
 	path := "/containers/" + opts.Container + "/attach?" + queryString(opts)
-	return c.hijack("POST", path, opts.Success, opts.InputStream, opts.ErrorStream, opts.OutputStream)
+	return c.hijack("POST", path, opts.Success, opts.RawTerminal, opts.InputStream, opts.ErrorStream, opts.OutputStream)
+}
+
+// LogsOptions represents the set of options used when getting logs from a
+// container.
+//
+// See http://goo.gl/rLhKSU for more details.
+type LogsOptions struct {
+	Container    string    `qs:"-"`
+	OutputStream io.Writer `qs:"-"`
+	ErrorStream  io.Writer `qs:"-"`
+	Follow       bool
+	Stdout       bool
+	Stderr       bool
+	Timestamps   bool
+	Tail         string
+
+	// Use raw terminal? Usually true when the container contains a TTY.
+	RawTerminal bool `qs:"-"`
+}
+
+// Logs gets stdout and stderr logs from the specified container.
+//
+// See http://goo.gl/rLhKSU for more details.
+func (c *Client) Logs(opts LogsOptions) error {
+	if opts.Container == "" {
+		return &NoSuchContainer{ID: opts.Container}
+	}
+	if opts.Tail == "" {
+		opts.Tail = "all"
+	}
+	path := "/containers/" + opts.Container + "/logs?" + queryString(opts)
+	return c.stream("GET", path, opts.RawTerminal, false, nil, nil, opts.OutputStream, opts.ErrorStream)
 }
 
 // ResizeContainerTTY resizes the terminal to the given height and width.
@@ -565,68 +655,10 @@ type ExportContainerOptions struct {
 // See http://goo.gl/Lqk0FZ for more details.
 func (c *Client) ExportContainer(opts ExportContainerOptions) error {
 	if opts.ID == "" {
-		return NoSuchContainer{ID: opts.ID}
+		return &NoSuchContainer{ID: opts.ID}
 	}
 	url := fmt.Sprintf("/containers/%s/export", opts.ID)
-	return c.stream("GET", url, nil, nil, opts.OutputStream)
-}
-
-// container logs
-type ContainerLogsOptions struct {
-	ID           string `qs:"-"`
-	Follow       bool
-	Stdout       bool
-	Stderr       bool
-	Timestamps   bool
-	Tail         int
-	OutputStream io.Writer `qs:"-"`
-}
-
-func (c *Client) ContainerLogs(opts ContainerLogsOptions) error {
-	if opts.ID == "" {
-		return &NoSuchContainer{ID: opts.ID}
-	}
-	path := "/containers/" + opts.ID + "/logs?" + queryString(opts)
-	body, status, err := c.do("GET", path, nil)
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: opts.ID}
-	}
-	if err != nil {
-		return err
-	}
-	log.Println(string(body))
-	io.Copy(opts.OutputStream, bytes.NewReader(body))
-	return nil
-}
-
-func (c *Client) PauseContainer(id string) error {
-	if id == "" {
-		return &NoSuchContainer{ID: id}
-	}
-	path := "/containers/" + id + "/pause"
-	_, status, err := c.do("POST", path, nil)
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *Client) UnpauseContainer(id string) error {
-	if id == "" {
-		return &NoSuchContainer{ID: id}
-	}
-	path := "/containers/" + id + "/unpause"
-	_, status, err := c.do("POST", path, nil)
-	if status == http.StatusNotFound {
-		return &NoSuchContainer{ID: id}
-	}
-	if err != nil {
-		return err
-	}
-	return nil
+	return c.stream("GET", url, true, false, nil, nil, opts.OutputStream, nil)
 }
 
 // NoSuchContainer is the error returned when a given container does not exist.
@@ -634,6 +666,26 @@ type NoSuchContainer struct {
 	ID string
 }
 
-func (err NoSuchContainer) Error() string {
+func (err *NoSuchContainer) Error() string {
 	return "No such container: " + err.ID
+}
+
+// ContainerAlreadyRunning is the error returned when a given container is
+// already running.
+type ContainerAlreadyRunning struct {
+	ID string
+}
+
+func (err *ContainerAlreadyRunning) Error() string {
+	return "Container already running: " + err.ID
+}
+
+// ContainerNotRunning is the error returned when a given container is not
+// running.
+type ContainerNotRunning struct {
+	ID string
+}
+
+func (err *ContainerNotRunning) Error() string {
+	return "Container not running: " + err.ID
 }

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 )
 
 // APIImages represent an image returned in the ListImages call.
@@ -27,6 +28,34 @@ type APIImages struct {
 	ParentId    string `json:",omitempty"`
 	Repository  string `json:",omitempty"`
 	Tag         string `json:",omitempty"`
+}
+
+type Image struct {
+	ID              string    `json:"id"`
+	Parent          string    `json:"parent,omitempty"`
+	Comment         string    `json:"comment,omitempty"`
+	Created         time.Time `json:"created"`
+	Container       string    `json:"container,omitempty"`
+	ContainerConfig Config    `json:"containerconfig,omitempty"`
+	DockerVersion   string    `json:"dockerversion,omitempty"`
+	Author          string    `json:"author,omitempty"`
+	Config          *Config   `json:"config,omitempty"`
+	Architecture    string    `json:"architecture,omitempty"`
+	Size            int64
+}
+
+type ImagePre012 struct {
+	ID              string    `json:"id"`
+	Parent          string    `json:"parent,omitempty"`
+	Comment         string    `json:"comment,omitempty"`
+	Created         time.Time `json:"created"`
+	Container       string    `json:"container,omitempty"`
+	ContainerConfig Config    `json:"container_config,omitempty"`
+	DockerVersion   string    `json:"docker_version,omitempty"`
+	Author          string    `json:"author,omitempty"`
+	Config          *Config   `json:"config,omitempty"`
+	Architecture    string    `json:"architecture,omitempty"`
+	Size            int64
 }
 
 var (
@@ -86,11 +115,35 @@ func (c *Client) InspectImage(name string) (*Image, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var image Image
-	err = json.Unmarshal(body, &image)
-	if err != nil {
-		return nil, err
+
+	// if the caller elected to skip checking the server's version, assume it's the latest
+	if c.SkipServerVersionCheck || c.expectedApiVersion.GreaterThanOrEqualTo(apiVersion_1_12) {
+		err = json.Unmarshal(body, &image)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var imagePre012 ImagePre012
+		err = json.Unmarshal(body, &imagePre012)
+		if err != nil {
+			return nil, err
+		}
+
+		image.ID = imagePre012.ID
+		image.Parent = imagePre012.Parent
+		image.Comment = imagePre012.Comment
+		image.Created = imagePre012.Created
+		image.Container = imagePre012.Container
+		image.ContainerConfig = imagePre012.ContainerConfig
+		image.DockerVersion = imagePre012.DockerVersion
+		image.Author = imagePre012.Author
+		image.Config = imagePre012.Config
+		image.Architecture = imagePre012.Architecture
+		image.Size = imagePre012.Size
 	}
+
 	return &image, nil
 }
 
@@ -100,6 +153,9 @@ func (c *Client) InspectImage(name string) (*Image, error) {
 type PushImageOptions struct {
 	// Name of the image
 	Name string
+
+	// Tag of the image
+	Tag string
 
 	// Registry server to push the image
 	Registry string
@@ -134,7 +190,7 @@ func (c *Client) PushImage(opts PushImageOptions, auth AuthConfiguration) error 
 
 	headers["X-Registry-Auth"] = base64.URLEncoding.EncodeToString(buf.Bytes())
 
-	return c.stream("POST", path, headers, nil, opts.OutputStream)
+	return c.stream("POST", path, true, false, headers, nil, opts.OutputStream, nil)
 }
 
 // PullImageOptions present the set of options available for pulling an image
@@ -142,10 +198,11 @@ func (c *Client) PushImage(opts PushImageOptions, auth AuthConfiguration) error 
 //
 // See http://goo.gl/PhBKnS for more details.
 type PullImageOptions struct {
-	Repository   string `qs:"fromImage"`
-	Registry     string
-	Tag          string
-	OutputStream io.Writer `qs:"-"`
+	Repository    string `qs:"fromImage"`
+	Registry      string
+	Tag           string
+	OutputStream  io.Writer `qs:"-"`
+	RawJSONStream bool      `qs:"-"`
 }
 
 // PullImage pulls an image from a remote registry, logging progress to w.
@@ -161,12 +218,12 @@ func (c *Client) PullImage(opts PullImageOptions, auth AuthConfiguration) error 
 	json.NewEncoder(&buf).Encode(auth)
 	headers["X-Registry-Auth"] = base64.URLEncoding.EncodeToString(buf.Bytes())
 
-	return c.createImage(queryString(&opts), headers, nil, opts.OutputStream)
+	return c.createImage(queryString(&opts), headers, nil, opts.OutputStream, opts.RawJSONStream)
 }
 
-func (c *Client) createImage(qs string, headers map[string]string, in io.Reader, w io.Writer) error {
+func (c *Client) createImage(qs string, headers map[string]string, in io.Reader, w io.Writer, rawJSONStream bool) error {
 	path := "/images/create?" + qs
-	return c.stream("POST", path, headers, in, w)
+	return c.stream("POST", path, true, rawJSONStream, headers, in, w, nil)
 }
 
 // ImportImageOptions present the set of informations available for importing
@@ -201,20 +258,21 @@ func (c *Client) ImportImage(opts ImportImageOptions) error {
 		opts.InputStream = bytes.NewBuffer(b)
 		opts.Source = "-"
 	}
-	return c.createImage(queryString(&opts), nil, opts.InputStream, opts.OutputStream)
+	return c.createImage(queryString(&opts), nil, opts.InputStream, opts.OutputStream, false)
 }
 
 // BuildImageOptions present the set of informations available for building
 // an image from a tarfile with a Dockerfile in it,the details about Dockerfile
 // see http://docs.docker.io/en/latest/reference/builder/
 type BuildImageOptions struct {
-	Name           string    `qs:"t"`
-	NoCache        bool      `qs:"nocache"`
-	SuppressOutput bool      `qs:"q"`
-	RmTmpContainer bool      `qs:"rm"`
-	InputStream    io.Reader `qs:"-"`
-	OutputStream   io.Writer `qs:"-"`
-	Remote         string    `qs:"remote"`
+	Name                string    `qs:"t"`
+	NoCache             bool      `qs:"nocache"`
+	SuppressOutput      bool      `qs:"q"`
+	RmTmpContainer      bool      `qs:"rm"`
+	ForceRmTmpContainer bool      `qs:"forcerm"`
+	InputStream         io.Reader `qs:"-"`
+	OutputStream        io.Writer `qs:"-"`
+	Remote              string    `qs:"remote"`
 }
 
 // BuildImage builds an image from a tarball's url or a Dockerfile in the input
@@ -233,13 +291,14 @@ func (c *Client) BuildImage(opts BuildImageOptions) error {
 		return ErrMissingRepo
 	}
 	return c.stream("POST", fmt.Sprintf("/build?%s",
-		queryString(&opts)), headers, opts.InputStream, opts.OutputStream)
+		queryString(&opts)), true, false, headers, opts.InputStream, opts.OutputStream, nil)
 }
 
 // TagImageOptions present the set of options to tag an image
 type TagImageOptions struct {
-	Repo  string `qs:"repo"`
-	Force bool   `qs:"force"`
+	Repo  string
+	Tag   string
+	Force bool
 }
 
 // TagImage adds a tag to the image 'name'

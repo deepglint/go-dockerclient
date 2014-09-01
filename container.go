@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -660,6 +661,64 @@ func (c *Client) ExportContainer(opts ExportContainerOptions) error {
 	url := fmt.Sprintf("/containers/%s/export", opts.ID)
 	return c.stream("GET", url, true, false, nil, nil, opts.OutputStream, nil)
 }
+
+// container logs
+type ContainerLogsOptions struct {
+	ID           string `qs:"-"`
+	Follow       bool
+	Stdout       bool
+	Stderr       bool
+	Timestamps   bool
+	Tail         int
+	OutputStream io.Writer `qs:"-"`
+}
+
+func (c *Client) ContainerLogs(opts ContainerLogsOptions) error {
+	if opts.ID == "" {
+		return &NoSuchContainer{ID: opts.ID}
+	}
+	path := "/containers/" + opts.ID + "/logs?" + queryString(opts)
+	body, status, err := c.do("GET", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: opts.ID}
+	}
+	if err != nil {
+		return err
+	}
+	log.Println(string(body))
+	io.Copy(opts.OutputStream, bytes.NewReader(body))
+	return nil
+}
+
+// func (c *Client) PauseContainer(id string) error {
+// 	if id == "" {
+// 		return &NoSuchContainer{ID: id}
+// 	}
+// 	path := "/containers/" + id + "/pause"
+// 	_, status, err := c.do("POST", path, nil)
+// 	if status == http.StatusNotFound {
+// 		return &NoSuchContainer{ID: id}
+// 	}
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+// func (c *Client) UnpauseContainer(id string) error {
+// 	if id == "" {
+// 		return &NoSuchContainer{ID: id}
+// 	}
+// 	path := "/containers/" + id + "/unpause"
+// 	_, status, err := c.do("POST", path, nil)
+// 	if status == http.StatusNotFound {
+// 		return &NoSuchContainer{ID: id}
+// 	}
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
 
 // NoSuchContainer is the error returned when a given container does not exist.
 type NoSuchContainer struct {

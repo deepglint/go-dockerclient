@@ -34,6 +34,7 @@ import (
 // For more details on the remote API, check http://goo.gl/G3plxW.
 type DockerServer struct {
 	containers     []*docker.Container
+	execs          []*docker.Exec
 	cMut           sync.RWMutex
 	images         []docker.Image
 	iMut           sync.RWMutex
@@ -97,6 +98,8 @@ func (s *DockerServer) buildMuxer() {
 	s.mux.Path("/containers/{id:.*}/wait").Methods("POST").HandlerFunc(s.handlerWrapper(s.waitContainer))
 	s.mux.Path("/containers/{id:.*}/attach").Methods("POST").HandlerFunc(s.handlerWrapper(s.attachContainer))
 	s.mux.Path("/containers/{id:.*}").Methods("DELETE").HandlerFunc(s.handlerWrapper(s.removeContainer))
+	s.mux.Path("/containers/{id:.*}/exec").Methods("POST").HandlerFunc(s.handlerWrapper(s.createExecContainer))
+	s.mux.Path("/exec/{id:.*}/start").Methods("POST").HandlerFunc(s.handlerWrapper(s.startExecContainer))
 	s.mux.Path("/images/create").Methods("POST").HandlerFunc(s.handlerWrapper(s.pullImage))
 	s.mux.Path("/build").Methods("POST").HandlerFunc(s.handlerWrapper(s.buildImage))
 	s.mux.Path("/images/json").Methods("GET").HandlerFunc(s.handlerWrapper(s.listImages))
@@ -174,8 +177,8 @@ func (s *DockerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Returns default http.Handler mux, it allows customHandlers to call the
-// default behavior if wanted.
+// DefaultHandler returns default http.Handler mux, it allows customHandlers to
+// call the default behavior if wanted.
 func (s *DockerServer) DefaultHandler() http.Handler {
 	return s.mux
 }
@@ -211,6 +214,7 @@ func (s *DockerServer) listContainers(w http.ResponseWriter, r *http.Request) {
 				Created: container.Created.Unix(),
 				Status:  container.State.String(),
 				Ports:   container.NetworkSettings.PortMappingAPI(),
+				Names:   []string{fmt.Sprintf("/%s", container.Name)},
 			}
 		}
 	}
@@ -278,7 +282,7 @@ func (s *DockerServer) createContainer(w http.ResponseWriter, r *http.Request) {
 	ports := map[docker.Port][]docker.PortBinding{}
 	for port := range config.ExposedPorts {
 		ports[port] = []docker.PortBinding{{
-			HostIp:   "0.0.0.0",
+			HostIP:   "0.0.0.0",
 			HostPort: strconv.Itoa(mathrand.Int() % 65536),
 		}}
 	}
@@ -294,6 +298,7 @@ func (s *DockerServer) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	container := docker.Container{
+		Name:    r.URL.Query().Get("name"),
 		ID:      s.generateID(),
 		Created: time.Now(),
 		Path:    path,
@@ -557,8 +562,10 @@ func (s *DockerServer) buildImage(w http.ResponseWriter, r *http.Request) {
 	}
 	//we did not use that Dockerfile to build image cause we are a fake Docker daemon
 	image := docker.Image{
-		ID: s.generateID(),
+		ID:      s.generateID(),
+		Created: time.Now(),
 	}
+
 	query := r.URL.Query()
 	repository := image.ID
 	if t := query.Get("t"); t != "" {
@@ -689,4 +696,24 @@ func (s *DockerServer) getImage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/tar")
 
+}
+
+func (s *DockerServer) createExecContainer(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	exec := docker.Exec{ID: "id-exec-created-by-test"}
+	s.execs = append(s.execs, &exec)
+	json.NewEncoder(w).Encode(map[string]string{"Id": exec.ID})
+
+}
+
+func (s *DockerServer) startExecContainer(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	for _, exec := range s.execs {
+		if exec.ID == id {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
 }

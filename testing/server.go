@@ -99,13 +99,16 @@ func (s *DockerServer) buildMuxer() {
 	s.mux.Path("/containers/{id:.*}/attach").Methods("POST").HandlerFunc(s.handlerWrapper(s.attachContainer))
 	s.mux.Path("/containers/{id:.*}").Methods("DELETE").HandlerFunc(s.handlerWrapper(s.removeContainer))
 	s.mux.Path("/containers/{id:.*}/exec").Methods("POST").HandlerFunc(s.handlerWrapper(s.createExecContainer))
+	s.mux.Path("/exec/{id:.*}/resize").Methods("POST").HandlerFunc(s.handlerWrapper(s.resizeExecContainer))
 	s.mux.Path("/exec/{id:.*}/start").Methods("POST").HandlerFunc(s.handlerWrapper(s.startExecContainer))
+	s.mux.Path("/exec/{id:.*}/resize").Methods("POST").HandlerFunc(s.handlerWrapper(s.resizeExecContainer))
 	s.mux.Path("/images/create").Methods("POST").HandlerFunc(s.handlerWrapper(s.pullImage))
 	s.mux.Path("/build").Methods("POST").HandlerFunc(s.handlerWrapper(s.buildImage))
 	s.mux.Path("/images/json").Methods("GET").HandlerFunc(s.handlerWrapper(s.listImages))
 	s.mux.Path("/images/{id:.*}").Methods("DELETE").HandlerFunc(s.handlerWrapper(s.removeImage))
 	s.mux.Path("/images/{name:.*}/json").Methods("GET").HandlerFunc(s.handlerWrapper(s.inspectImage))
 	s.mux.Path("/images/{name:.*}/push").Methods("POST").HandlerFunc(s.handlerWrapper(s.pushImage))
+	s.mux.Path("/images/{name:.*}/tag").Methods("POST").HandlerFunc(s.handlerWrapper(s.tagImage))
 	s.mux.Path("/events").Methods("GET").HandlerFunc(s.listEvents)
 	s.mux.Path("/_ping").Methods("GET").HandlerFunc(s.handlerWrapper(s.pingDocker))
 	s.mux.Path("/images/load").Methods("POST").HandlerFunc(s.handlerWrapper(s.loadImage))
@@ -604,12 +607,34 @@ func (s *DockerServer) pushImage(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Pushed")
 }
 
+func (s *DockerServer) tagImage(w http.ResponseWriter, r *http.Request) {
+	name := mux.Vars(r)["name"]
+	s.iMut.RLock()
+	if _, ok := s.imgIDs[name]; !ok {
+		s.iMut.RUnlock()
+		http.Error(w, "No such image", http.StatusNotFound)
+		return
+	}
+	s.iMut.RUnlock()
+	s.iMut.Lock()
+	defer s.iMut.Unlock()
+	newRepo := r.URL.Query().Get("repo")
+	s.imgIDs[newRepo] = s.imgIDs[name]
+	w.WriteHeader(http.StatusCreated)
+}
+
 func (s *DockerServer) removeImage(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	s.iMut.RLock()
 	var tag string
 	if img, ok := s.imgIDs[id]; ok {
 		id, tag = img, id
+	}
+	var tags []string
+	for tag, taggedID := range s.imgIDs {
+		if taggedID == id {
+			tags = append(tags, tag)
+		}
 	}
 	s.iMut.RUnlock()
 	_, index, err := s.findImageByID(id)
@@ -620,8 +645,10 @@ func (s *DockerServer) removeImage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 	s.iMut.Lock()
 	defer s.iMut.Unlock()
-	s.images[index] = s.images[len(s.images)-1]
-	s.images = s.images[:len(s.images)-1]
+	if len(tags) < 2 {
+		s.images[index] = s.images[len(s.images)-1]
+		s.images = s.images[:len(s.images)-1]
+	}
 	if tag != "" {
 		delete(s.imgIDs, tag)
 	}
@@ -708,6 +735,17 @@ func (s *DockerServer) createExecContainer(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *DockerServer) startExecContainer(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	for _, exec := range s.execs {
+		if exec.ID == id {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNotFound)
+}
+
+func (s *DockerServer) resizeExecContainer(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	for _, exec := range s.execs {
 		if exec.ID == id {

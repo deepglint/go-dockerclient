@@ -196,6 +196,7 @@ type Config struct {
 	NetworkDisabled bool                `json:"NetworkDisabled,omitempty" yaml:"NetworkDisabled,omitempty"`
 	SecurityOpts    []string            `json:"SecurityOpts,omitempty" yaml:"SecurityOpts,omitempty"`
 	OnBuild         []string            `json:"OnBuild,omitempty" yaml:"OnBuild,omitempty"`
+	Labels          map[string]string   `json:"Labels,omitempty" yaml:"Labels,omitempty"`
 }
 
 // SwarmNode containers information about which Swarm node the container is on
@@ -377,6 +378,14 @@ func NeverRestart() RestartPolicy {
 	return RestartPolicy{Name: "no"}
 }
 
+// Device represents a device mapping between the Docker host and the
+// container.
+type Device struct {
+	PathOnHost        string `json:"PathOnHost,omitempty" yaml:"PathOnHost,omitempty"`
+	PathInContainer   string `json:"PathInContainer,omitempty" yaml:"PathInContainer,omitempty"`
+	CgroupPermissions string `json:"CgroupPermissions,omitempty" yaml:"CgroupPermissions,omitempty"`
+}
+
 // HostConfig contains the container options related to starting a container on
 // a given host
 type HostConfig struct {
@@ -397,6 +406,7 @@ type HostConfig struct {
 	IpcMode         string                 `json:"IpcMode,omitempty" yaml:"IpcMode,omitempty"`
 	PidMode         string                 `json:"PidMode,omitempty" yaml:"PidMode,omitempty"`
 	RestartPolicy   RestartPolicy          `json:"RestartPolicy,omitempty" yaml:"RestartPolicy,omitempty"`
+	Devices         []Device               `json:"Devices,omitempty" yaml:"Devices,omitempty"`
 }
 
 // StartContainer starts a container, returning an error in case of failure.

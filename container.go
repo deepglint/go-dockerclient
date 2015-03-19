@@ -791,7 +791,7 @@ func (c *Client) ContainerLogs(opts ContainerLogsOptions) error {
 		return &NoSuchContainer{ID: opts.ID}
 	}
 	path := "/containers/" + opts.ID + "/logs?" + queryString(opts)
-	body, status, err := c.do("GET", path, nil)
+	body, status, err := c.do("GET", path, nil, false)
 	if status == http.StatusNotFound {
 		return &NoSuchContainer{ID: opts.ID}
 	}

@@ -61,7 +61,7 @@ func (c *Client) Auth(opts *AuthServerOptions) error {
 	if opts == nil {
 		opts = &AuthServerOptions{}
 	}
-	_, _, err := c.do("POST", "/auth", opts)
+	_, _, err := c.do("POST", "/auth", opts, false)
 	if err != nil {
 		return err
 	}

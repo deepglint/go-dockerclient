@@ -41,14 +41,14 @@ func (c *Client) Info() (*Env, error) {
 }
 
 /////////////////////////////////////////////////////////
-
-// func (c *Client) Ping() (string, error) {
-// 	body, _, err := c.do("GET", "/_ping", nil)
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	return string(body), nil
-// }
+/*
+func (c *Client) Ping() (string, error) {
+	body, _, err := c.do("GET", "/_ping", nil)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
 
 type AuthServerOptions struct {
 	Username      string
@@ -61,13 +61,13 @@ func (c *Client) Auth(opts *AuthServerOptions) error {
 	if opts == nil {
 		opts = &AuthServerOptions{}
 	}
-	_, _, err := c.do("POST", "/auth", opts, false)
+	_, _, err := c.do("POST", "/auth", opts)
 	if err != nil {
 		return err
 	}
 	return nil
 }
-
+*/
 /////////////////////////////////////////////////////////
 
 // ParseRepositoryTag gets the name of the repository and returns it splitted

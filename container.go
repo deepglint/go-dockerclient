@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1025,6 +1024,7 @@ func (c *Client) ExportContainer(opts ExportContainerOptions) error {
 	})
 }
 
+/*
 // container logs
 type ContainerLogsOptions struct {
 	ID           string `qs:"-"`
@@ -1040,8 +1040,9 @@ func (c *Client) ContainerLogs(opts ContainerLogsOptions) error {
 	if opts.ID == "" {
 		return &NoSuchContainer{ID: opts.ID}
 	}
+
 	path := "/containers/" + opts.ID + "/logs?" + queryString(opts)
-	body, status, err := c.do("GET", path, nil, false)
+	body, status, err := c.do("GET", path, nil)
 	if status == http.StatusNotFound {
 		return &NoSuchContainer{ID: opts.ID}
 	}
@@ -1053,35 +1054,36 @@ func (c *Client) ContainerLogs(opts ContainerLogsOptions) error {
 	return nil
 }
 
-// func (c *Client) PauseContainer(id string) error {
-// 	if id == "" {
-// 		return &NoSuchContainer{ID: id}
-// 	}
-// 	path := "/containers/" + id + "/pause"
-// 	_, status, err := c.do("POST", path, nil)
-// 	if status == http.StatusNotFound {
-// 		return &NoSuchContainer{ID: id}
-// 	}
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
+func (c *Client) PauseContainer(id string) error {
+	if id == "" {
+		return &NoSuchContainer{ID: id}
+	}
+	path := "/containers/" + id + "/pause"
+	_, status, err := c.do("POST", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: id}
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
-// func (c *Client) UnpauseContainer(id string) error {
-// 	if id == "" {
-// 		return &NoSuchContainer{ID: id}
-// 	}
-// 	path := "/containers/" + id + "/unpause"
-// 	_, status, err := c.do("POST", path, nil)
-// 	if status == http.StatusNotFound {
-// 		return &NoSuchContainer{ID: id}
-// 	}
-// 	if err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
+func (c *Client) UnpauseContainer(id string) error {
+	if id == "" {
+		return &NoSuchContainer{ID: id}
+	}
+	path := "/containers/" + id + "/unpause"
+	_, status, err := c.do("POST", path, nil)
+	if status == http.StatusNotFound {
+		return &NoSuchContainer{ID: id}
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+*/
 
 // NoSuchContainer is the error returned when a given container does not exist.
 type NoSuchContainer struct {
